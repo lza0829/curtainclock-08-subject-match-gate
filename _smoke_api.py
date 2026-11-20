@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""0-1 API smoke against running server on 11100."""
+"""0-1 API smoke against running server on 11100.
+
+覆盖：直挂开窗 → 替身命中（主不匹配、链上有匹配者，租约实执行器非主）
+→ 全链失败进冲突（不落租约、水位不加）→ 关窗释放 → 水位互证。
+前置：服务以种子库启动（W-SUB-01/W-SUB-02 为类型不匹配批窗）。
+"""
 from __future__ import annotations
 
 import json
@@ -34,38 +39,46 @@ def main() -> None:
     st, dash = call("GET", "/dashboard")
     assert st == 200, dash
     print("dashboard", dash)
+    assert dash["mismatch_sessions"] >= 2, dash
 
-    st, open1 = call("POST", "/leases/open", {"session_code": "S-MATH-01"})
-    assert st == 200, open1
-    print("open1", open1)
+    # 类型匹配 → 主执行器直挂
+    st, direct = call("POST", "/leases/open", {"session_code": "W-DIM-01"})
+    assert st == 200 and direct["use_substitute"] is False, direct
+    print("direct", direct)
 
-    # same room+slot different teacher -> conflict
-    st, created = call(
-        "POST",
-        "/sessions",
-        {
-            "code": "S-MATH-DUP",
-            "title": "冲突试课",
-            "subject": "数学",
-            "room_code": "R-101",
-            "teacher_code": "T-CHEN",
-            "day": "2026-11-20",
-            "start_min": 540,
-            "end_min": 630,
-        },
-    )
-    assert st == 200, created
-    st, conflict = call("POST", "/leases/open", {"session_code": "S-MATH-DUP"})
-    assert st == 409, conflict
+    # 主不匹配、链上有匹配者 → 成功且租约实执行器非主，带替身序号
+    st, sub = call("POST", "/leases/open", {"session_code": "W-SUB-01"})
+    assert st == 200, sub
+    assert sub["use_substitute"] is True and sub["actual_teacher"] != sub["primary_teacher"], sub
+    assert sub["substitute_hit"] == 2 and sub["actual_teacher"] == "E-PIPE-01", sub
+    print("substitute", sub)
+
+    # 全链失败 → 409 冲突，不落租约
+    st, before_leases = call("GET", "/leases")
+    st, conflict = call("POST", "/leases/open", {"session_code": "W-SUB-02"})
+    assert st == 409 and "全链失败" in conflict["detail"], conflict
     print("conflict", conflict)
+    st, after_leases = call("GET", "/leases")
+    assert len(after_leases) == len(before_leases), "全链失败不得落租约"
 
-    st, closed = call("POST", "/leases/close", {"lease_no": open1["lease_no"]})
+    # 租约快照留替身痕迹，且不匹配主执行器零占用
+    assert any(
+        L["session_code"] == "W-SUB-01"
+        and L["teacher_code"] == "E-PIPE-01"
+        and L["primary_teacher_code"] == "E-BI-01"
+        and L["substitute_hit"] == 2
+        for L in after_leases
+    ), after_leases
+    assert all(L["teacher_code"] != "E-BI-02" for L in after_leases), "不匹配主执行器被占用"
+
+    st, closed = call("POST", "/leases/close", {"lease_no": direct["lease_no"]})
     assert st == 200, closed
     print("close", closed)
 
     st, dash2 = call("GET", "/dashboard")
-    assert st == 200 and dash2["open_leases"] == 0, dash2
+    assert st == 200, dash2
     assert dash2["conflict_count"] >= 1, dash2
+    assert dash2["substitute_leases"] >= 1 and dash2["open_substitute_leases"] >= 1, dash2
     print("dashboard_after", dash2)
     print("SMOKE_OK")
 

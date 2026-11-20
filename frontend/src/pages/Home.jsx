@@ -35,6 +35,17 @@ export default function Home() {
           待开窗
           <b>{d.draft_sessions}</b>
         </div>
+        <div className="stat">
+          类型不匹配批窗
+          <b>{d.mismatch_sessions}</b>
+        </div>
+        <div className="stat">
+          替身租约（在途）
+          <b>
+            {d.substitute_leases}
+            <small>（{d.open_substitute_leases}）</small>
+          </b>
+        </div>
       </div>
     </section>
   );

@@ -21,6 +21,7 @@ export const api = {
   dashboard: () => req("/dashboard"),
   rooms: () => req("/rooms"),
   teachers: () => req("/teachers"),
+  substituteChains: () => req("/substitute-chains"),
   sessions: () => req("/sessions"),
   leases: () => req("/leases"),
   conflicts: () => req("/conflicts"),

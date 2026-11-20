@@ -32,7 +32,10 @@ export default function Sessions() {
     setErr("");
     try {
       const r = await api.openLease(code);
-      setMsg(`已开窗，租约 ${r.lease_no}；在途租约 ${r.open_leases}`);
+      const tail = r.use_substitute
+        ? `；替身命中 #${r.substitute_hit}，实执行器 ${r.actual_teacher}（主执行器 ${r.primary_teacher} 类型不匹配未占用）`
+        : "";
+      setMsg(`已开窗，租约 ${r.lease_no}；在途租约 ${r.open_leases}${tail}`);
       await load();
     } catch (e) {
       setErr(e.message);
@@ -50,53 +53,69 @@ export default function Sessions() {
           <tr>
             <th>批窗</th>
             <th>时段</th>
-            <th>算力槽 / 执行器</th>
+            <th>算力槽 / 主执行器</th>
             <th>就绪</th>
             <th>状态</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.code}>
-              <td>
-                <div>{r.title}</div>
-                <small>{r.code}</small>
-              </td>
-              <td>
-                {r.day}
-                <br />
-                {fmtMin(r.start_min)}–{fmtMin(r.end_min)}
-              </td>
-              <td>
-                {r.room_code}
-                <br />
-                {r.teacher_code}
-              </td>
-              <td>
-                {r.readiness?.ready ? (
-                  <span className="tag live">就绪</span>
-                ) : (
-                  <span className="tag bad">
-                    {(r.readiness?.reasons || []).join("；") || "未就绪"}
+          {rows.map((r) => {
+            const v = r.readiness || {};
+            return (
+              <tr key={r.code}>
+                <td>
+                  <div>{r.title}</div>
+                  <small>{r.code}</small>
+                  {v.type_mismatch && (
+                    <div className="tag bad" style={{ marginTop: 4 }}>
+                      类型不匹配 · 走替身链
+                    </div>
+                  )}
+                </td>
+                <td>
+                  {r.day}
+                  <br />
+                  {fmtMin(r.start_min)}–{fmtMin(r.end_min)}
+                </td>
+                <td>
+                  {r.room_code}
+                  <br />
+                  {r.teacher_code}
+                  {v.use_substitute && (
+                    <>
+                      <br />
+                      <small>
+                        拟替身 → {v.actual_teacher}（#{v.substitute_hit}）
+                      </small>
+                    </>
+                  )}
+                </td>
+                <td>
+                  {v.ready ? (
+                    <span className="tag live">就绪</span>
+                  ) : (
+                    <span className="tag bad">
+                      {(v.reasons || []).join("；") || "未就绪"}
+                    </span>
+                  )}
+                </td>
+                <td>
+                  <span className={`tag ${r.status}`}>
+                    {statusLabel[r.status] || r.status}
                   </span>
-                )}
-              </td>
-              <td>
-                <span className={`tag ${r.status}`}>
-                  {statusLabel[r.status] || r.status}
-                </span>
-              </td>
-              <td>
-                <button
-                  disabled={r.status !== "draft"}
-                  onClick={() => openLease(r.code)}
-                >
-                  开窗占用
-                </button>
-              </td>
-            </tr>
-          ))}
+                </td>
+                <td>
+                  <button
+                    disabled={r.status !== "draft"}
+                    onClick={() => openLease(r.code)}
+                  >
+                    开窗占用
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </section>

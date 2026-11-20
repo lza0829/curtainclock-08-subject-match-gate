@@ -17,6 +17,13 @@ def teacher_active(conn: sqlite3.Connection, teacher_code: str) -> bool:
     return bool(row and row["active"] == 1)
 
 
+def teacher_subject(conn: sqlite3.Connection, teacher_code: str) -> str | None:
+    row = conn.execute(
+        "SELECT subject FROM teachers WHERE code=?", (teacher_code,)
+    ).fetchone()
+    return row["subject"] if row else None
+
+
 def overlap(
     a_start: int, a_end: int, b_start: int, b_end: int
 ) -> bool:
@@ -46,12 +53,30 @@ def resource_busy(
     return None
 
 
-def readiness(conn: sqlite3.Connection, session: sqlite3.Row) -> dict:
+def substitute_chain(
+    conn: sqlite3.Connection, primary_code: str
+) -> list[sqlite3.Row]:
+    """主执行器的替身优先级表，按 position 升序（1 为最高优先级）。"""
+    return conn.execute(
+        "SELECT position, substitute_code FROM substitute_chains "
+        "WHERE primary_code=? ORDER BY position",
+        (primary_code,),
+    ).fetchall()
+
+
+def adjudicate(conn: sqlite3.Connection, session: sqlite3.Row) -> dict:
+    """全局唯一裁决：作业类型 vs 执行器能力标签 + 算力槽/执行器就绪。
+
+    口径（类型驱动替身链，全局唯一）：
+    - 主执行器能力与作业类型不一致 → 主执行器禁止占用，按替身优先级表
+      找能力匹配、启用且空闲者；命中则 lease 记替身序号与实执行器；
+    - 链上无可用者 → 全链失败，reasons 带门禁痕迹，开窗据此进冲突；
+    - 主执行器类型匹配 → 走原就绪路径（启用 + 空闲）。
+    """
     reasons: list[str] = []
+
     if not room_active(conn, session["room_code"]):
         reasons.append("算力槽未启用")
-    if not teacher_active(conn, session["teacher_code"]):
-        reasons.append("执行器未启用")
     busy_room = resource_busy(
         conn,
         kind="room",
@@ -63,15 +88,80 @@ def readiness(conn: sqlite3.Connection, session: sqlite3.Row) -> dict:
     )
     if busy_room:
         reasons.append(f"算力槽已被租约 {busy_room['lease_no']} 占用")
-    busy_teacher = resource_busy(
-        conn,
-        kind="teacher",
-        resource_code=session["teacher_code"],
-        day=session["day"],
-        start_min=session["start_min"],
-        end_min=session["end_min"],
-        exclude_session=session["code"],
-    )
-    if busy_teacher:
-        reasons.append(f"执行器已被租约 {busy_teacher['lease_no']} 占用")
-    return {"ready": len(reasons) == 0, "reasons": reasons}
+
+    job_type = session["subject"]
+    primary_code = session["teacher_code"]
+    primary_subject = teacher_subject(conn, primary_code)
+    mismatch = primary_subject is not None and primary_subject != job_type
+
+    chosen_code: str | None = None
+    chosen_hit: int | None = None
+    chain_codes: list[str] = []
+
+    if mismatch:
+        # 类型门禁：不匹配的主执行器一律不参与启用/空闲判定，不得占用
+        chain = substitute_chain(conn, primary_code)
+        chain_codes = [r["substitute_code"] for r in chain]
+        skipped: list[str] = []
+        for link in chain:
+            cand = link["substitute_code"]
+            cand_subject = teacher_subject(conn, cand)
+            if cand_subject != job_type:
+                skipped.append(f"#{link['position']} {cand} 能力为 {cand_subject or '未知'}，不匹配")
+                continue
+            if not teacher_active(conn, cand):
+                skipped.append(f"#{link['position']} {cand} 未启用")
+                continue
+            busy = resource_busy(
+                conn,
+                kind="teacher",
+                resource_code=cand,
+                day=session["day"],
+                start_min=session["start_min"],
+                end_min=session["end_min"],
+                exclude_session=session["code"],
+            )
+            if busy:
+                skipped.append(f"#{link['position']} {cand} 已被租约 {busy['lease_no']} 占用")
+                continue
+            chosen_code = cand
+            chosen_hit = link["position"]
+            break
+
+        if chosen_code is None:
+            detail = "；".join(skipped) if skipped else "替身链为空"
+            reasons.append(
+                f"作业类型 {job_type} 与主执行器 {primary_code} 能力 {primary_subject} 不匹配，"
+                f"替身链全链失败（{detail}）"
+            )
+    else:
+        # 类型匹配：主执行器按原口径检查启用与空闲
+        if not teacher_active(conn, primary_code):
+            reasons.append("执行器未启用")
+        busy_teacher = resource_busy(
+            conn,
+            kind="teacher",
+            resource_code=primary_code,
+            day=session["day"],
+            start_min=session["start_min"],
+            end_min=session["end_min"],
+            exclude_session=session["code"],
+        )
+        if busy_teacher:
+            reasons.append(f"执行器已被租约 {busy_teacher['lease_no']} 占用")
+
+    return {
+        "ready": len(reasons) == 0,
+        "reasons": reasons,
+        "type_mismatch": mismatch,
+        "use_substitute": chosen_code is not None,
+        "primary_teacher": primary_code,
+        "actual_teacher": chosen_code if chosen_code is not None else primary_code,
+        "substitute_hit": chosen_hit,
+        "substitute_chain": chain_codes,
+    }
+
+
+def readiness(conn: sqlite3.Connection, session: sqlite3.Row) -> dict:
+    """向后兼容的就绪视图，裁决细节一并透出供前端展示。"""
+    return adjudicate(conn, session)

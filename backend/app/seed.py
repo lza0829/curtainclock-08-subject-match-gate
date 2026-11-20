@@ -45,12 +45,34 @@ def seed_if_empty() -> None:
             ("W-FACT-01", "事实入湖窗", "ETL", "S-ETL-02", "E-PIPE-02", day, 9 * 60, 10 * 60 + 30),
             ("W-RPT-01", "日报物化窗", "BI", "S-BI-01", "E-BI-01", day, 13 * 60, 14 * 60 + 30),
             ("W-RPT-02", "看板刷新窗", "BI", "S-BI-02", "E-BI-02", day, 13 * 60, 14 * 60 + 30),
+            # 主执行器仅挂 BI 能力，作业却是 ETL：类型不匹配，须走替身链
+            ("W-SUB-01", "跨槽补数窗（替身命中）", "ETL", "S-ETL-01", "E-BI-01", day, 15 * 60, 16 * 60),
+            # 主执行器 BI，替身链上没有任何 ETL 能力者：全链失败进冲突
+            ("W-SUB-02", "夜间重算窗（全链失败）", "ETL", "S-ETL-02", "E-BI-02", day, 16 * 60 + 30, 17 * 60 + 30),
         ]
         for row in sessions:
             conn.execute(
                 "INSERT INTO sessions(code, title, subject, room_code, teacher_code, day, start_min, end_min, status) "
                 "VALUES(?,?,?,?,?,?,?,?, 'draft')",
                 row,
+            )
+        # 替身优先级表：(主执行器, 优先级序号, 替身执行器)，序号从 1 开始
+        chains = [
+            # E-BI-01 的链：首位是同型 BI（对 ETL 作业不匹配，须跳过），
+            # 第二位才是 ETL 能力的 E-PIPE-01——验证按类型过滤而非只取首位
+            ("E-BI-01", 1, "E-BI-02"),
+            ("E-BI-01", 2, "E-PIPE-01"),
+            # E-BI-02 的链全是 BI 能力：ETL 作业全链失败
+            ("E-BI-02", 1, "E-BI-01"),
+            # ETL 执行器也配链，覆盖主执行器为 ETL 的不匹配场景
+            ("E-PIPE-01", 1, "E-PIPE-02"),
+            ("E-PIPE-02", 1, "E-PIPE-01"),
+        ]
+        for primary, position, substitute in chains:
+            conn.execute(
+                "INSERT INTO substitute_chains(primary_code, position, substitute_code) "
+                "VALUES(?,?,?)",
+                (primary, position, substitute),
             )
         conn.execute(
             "INSERT INTO watermarks(key, value, updated_at) VALUES('open_leases', 0, ?)",

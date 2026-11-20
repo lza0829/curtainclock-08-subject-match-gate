@@ -65,7 +65,22 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+-- 替身优先级表：每个主执行器一条有序替身链，position 从 1 开始
+CREATE TABLE IF NOT EXISTS substitute_chains (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  primary_code TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  substitute_code TEXT NOT NULL,
+  UNIQUE(primary_code, position),
+  UNIQUE(primary_code, substitute_code)
+);
 """
+
+# 老库补列：租约快照需留替身痕迹
+_LEASE_MIGRATIONS = (
+    "ALTER TABLE leases ADD COLUMN primary_teacher_code TEXT",
+    "ALTER TABLE leases ADD COLUMN substitute_hit INTEGER",
+)
 
 
 def connect() -> sqlite3.Connection:
@@ -79,6 +94,8 @@ def connect() -> sqlite3.Connection:
 
 @contextmanager
 def transaction():
+    # BEGIN IMMEDIATE：开窗/替身落库同事务，写锁立即取得，
+    # 并发两路抢同一执行者时第二路被串行化，杜绝双占
     conn = connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -91,10 +108,19 @@ def transaction():
         conn.close()
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(leases)")}
+    for stmt in _LEASE_MIGRATIONS:
+        col = stmt.split("ADD COLUMN")[1].strip().split()[0]
+        if col not in existing:
+            conn.execute(stmt)
+
+
 def init_db() -> None:
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         conn.commit()
     finally:
         conn.close()

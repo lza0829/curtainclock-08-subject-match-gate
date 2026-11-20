@@ -34,7 +34,7 @@ export default function Leases() {
 
   return (
     <section className="panel">
-      <h2>租约</h2>
+      <h2>租约快照</h2>
       {msg && <div className="msg">{msg}</div>}
       {err && <div className="msg err">{err}</div>}
       <table>
@@ -42,7 +42,8 @@ export default function Leases() {
           <tr>
             <th>租约号</th>
             <th>批窗</th>
-            <th>资源</th>
+            <th>资源（实执行器）</th>
+            <th>替身痕迹</th>
             <th>时段</th>
             <th>状态</th>
             <th></th>
@@ -55,6 +56,17 @@ export default function Leases() {
               <td>{r.session_code}</td>
               <td>
                 {r.room_code} / {r.teacher_code}
+              </td>
+              <td>
+                {r.substitute_hit != null ? (
+                  <span className="tag live">
+                    替身 #{r.substitute_hit}
+                    <br />
+                    主执行器 {r.primary_teacher_code}
+                  </span>
+                ) : (
+                  <small>主执行器直挂</small>
+                )}
               </td>
               <td>
                 {r.day} {fmtMin(r.start_min)}–{fmtMin(r.end_min)}
